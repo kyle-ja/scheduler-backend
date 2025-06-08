@@ -1,0 +1,5 @@
+fastapi==0.109.2
+uvicorn==0.27.1
+ortools==9.8.3296
+pydantic==2.6.1
+python-multipart==0.0.9
