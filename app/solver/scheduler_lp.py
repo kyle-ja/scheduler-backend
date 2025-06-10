@@ -93,16 +93,16 @@ def create_adaptive_objective(model, x, cost_matrix, workload_penalty_vars, cons
         if emp_rank3_day_indices[i]:
             total_rank3_assignments += sum(x[i][d] for d in emp_rank3_day_indices[i])
 
-    # PHASE 4 IMPROVEMENT: Enhanced objective with preference balancing and equity
+    # WORKLOAD DISTRIBUTION FIXED: Now guaranteed by hard constraints
     W_PREFERENCE_COST = 1           # Basic cost (keep low for efficiency)
-    W_RANK1_BONUS = 2000            # Highest priority for top preferences
+    W_RANK1_BONUS = 2000            # High priority for top preferences
     W_RANK2_BONUS = 1000            # Strong bonus for rank 2
     W_RANK3_BONUS = 500             # Good bonus for rank 3
-    W_WORKLOAD_PENALTY = 1000       # Penalty for workload imbalance
+    W_WORKLOAD_PENALTY = 0          # *** NO LONGER NEEDED *** - Workload guaranteed by hard constraints
     W_CONSECUTIVE_PENALTY = 500     # Penalty for consecutive violations
-    W_PREFERENCE_BALANCE = 800      # NEW: Penalty for unfair rank-1 distribution
-    W_TOP3_GUARANTEE = 1200         # NEW: Penalty for not getting top-3 preferences
-    W_PREFERENCE_EQUITY = 400       # NEW: Penalty for preference satisfaction variance
+    W_PREFERENCE_BALANCE = 800      # Penalty for unfair rank-1 distribution
+    W_TOP3_GUARANTEE = 1200         # Penalty for not getting top-3 preferences
+    W_PREFERENCE_EQUITY = 400       # Penalty for preference satisfaction variance
 
     # Enhanced objective that prioritizes fairness and balanced preference satisfaction
     objective_terms = [
@@ -168,23 +168,19 @@ def build_adaptive_model(payload: Dict) -> tuple:
 
     # SOFT CONSTRAINTS (use penalty variables for automatic relaxation)
     
-    # Workload balancing with penalties
+    # WORKLOAD DISTRIBUTION: HARD CONSTRAINTS (never violated)
     min_load = num_days // num_emp if num_emp > 0 else num_days
     max_load = (num_days + num_emp - 1) // num_emp if num_emp > 0 else num_days
     
-    workload_penalty_vars = []
+    # CRITICAL FIX: Make workload balancing a HARD constraint, not soft
     for i in range(num_emp):
         total_days = sum(x[i][d] for d in range(num_days))
-        
-        # Penalty for working too few days
-        under_penalty = model.NewIntVar(0, max_load, f"under_penalty_{i}")
-        model.Add(under_penalty >= min_load - total_days)
-        workload_penalty_vars.append(under_penalty)
-        
-        # Penalty for working too many days  
-        over_penalty = model.NewIntVar(0, max_load, f"over_penalty_{i}")
-        model.Add(over_penalty >= total_days - max_load)
-        workload_penalty_vars.append(over_penalty)
+        # HARD CONSTRAINTS: These can NEVER be violated
+        model.Add(total_days >= min_load)
+        model.Add(total_days <= max_load)
+    
+    # Keep minimal penalty variables for objective function (but workload is now guaranteed)
+    workload_penalty_vars = []
 
     # Consecutive days constraint with penalties
     consecutive_penalty_vars = []
