@@ -129,7 +129,7 @@ def create_adaptive_objective(model, x, cost_matrix, workload_penalty_vars, cons
 
 
 def build_adaptive_model(payload: Dict) -> tuple:
-    """PHASE 3: Build a single adaptive model with soft constraints for speed"""
+    """PHASE 3: Build a single adaptive model with enhanced workload distribution"""
     
     employees = payload["employees"]
     dates = payload["dates"]
@@ -154,30 +154,61 @@ def build_adaptive_model(payload: Dict) -> tuple:
             weekday = date_info["weekday"]
             cost_matrix[i][d] = emp["weekday_cost"][weekday]
 
+    # ENHANCED WORKLOAD DISTRIBUTION FEASIBILITY CHECKING
+    min_load = num_days // num_emp if num_emp > 0 else num_days
+    max_load = (num_days + num_emp - 1) // num_emp if num_emp > 0 else num_days
+    
+    # Check each employee has enough available days for fair distribution
+    for i, emp in enumerate(employees):
+        available_days_count = sum(1 for d in range(num_days) 
+                                 if cost_matrix[i][d] <= MAX_ALLOWED_COST)
+        
+        if available_days_count < min_load:
+            # ADAPTIVE SOLUTION: Gradually increase cost threshold for this employee
+            # until they have enough available days
+            adaptive_threshold = MAX_ALLOWED_COST
+            while available_days_count < min_load and adaptive_threshold < 100:
+                adaptive_threshold += 10
+                available_days_count = sum(1 for d in range(num_days) 
+                                         if cost_matrix[i][d] <= adaptive_threshold)
+            
+            if available_days_count < min_load:
+                raise RuntimeError(
+                    f"Employee '{emp['name']}' only has {available_days_count} "
+                    f"reasonably available days, but needs at least {min_load} days "
+                    f"for fair distribution. Consider adjusting their preferences or "
+                    f"the scheduling period."
+                )
+            
+            # Use the adaptive threshold for this employee
+            print(f"Adaptive threshold for {emp['name']}: {adaptive_threshold} "
+                  f"(was {MAX_ALLOWED_COST})")
+            for d in range(num_days):
+                if cost_matrix[i][d] > adaptive_threshold:
+                    model.Add(x[i][d] == 0)
+        else:
+            # Standard availability constraint
+            for d in range(num_days):
+                if cost_matrix[i][d] > MAX_ALLOWED_COST:
+                    model.Add(x[i][d] == 0)
+
     # HARD CONSTRAINTS (never relax these)
     
     # C1: Exactly one employee per day (fundamental requirement)
     for d in range(num_days):
         model.Add(sum(x[i][d] for i in range(num_emp)) == 1)
 
-    # C2: Availability constraint (Phase 1 improvement - never assign unavailable days)
-    for i in range(num_emp):
-        for d in range(num_days):
-            if cost_matrix[i][d] > MAX_ALLOWED_COST:
-                model.Add(x[i][d] == 0)
-
-    # SOFT CONSTRAINTS (use penalty variables for automatic relaxation)
+    # C2: STRENGTHENED WORKLOAD DISTRIBUTION - ABSOLUTELY FAIR
+    print(f"Enforcing workload distribution: min={min_load}, max={max_load} days per employee")
     
-    # WORKLOAD DISTRIBUTION: HARD CONSTRAINTS (never violated)
-    min_load = num_days // num_emp if num_emp > 0 else num_days
-    max_load = (num_days + num_emp - 1) // num_emp if num_emp > 0 else num_days
-    
-    # CRITICAL FIX: Make workload balancing a HARD constraint, not soft
     for i in range(num_emp):
         total_days = sum(x[i][d] for d in range(num_days))
-        # HARD CONSTRAINTS: These can NEVER be violated
-        model.Add(total_days >= min_load)
-        model.Add(total_days <= max_load)
+        model.Add(total_days >= min_load)  # Minimum days required
+        model.Add(total_days <= max_load)  # Maximum days allowed
+        
+        # For perfect division cases, enforce exact equality
+        if num_days % num_emp == 0:
+            model.Add(total_days == min_load)  # Exactly equal distribution
     
     # Keep minimal penalty variables for objective function (but workload is now guaranteed)
     workload_penalty_vars = []
@@ -285,6 +316,43 @@ def build_adaptive_model(payload: Dict) -> tuple:
     return model, x, cost_matrix, workload_penalty_vars, consecutive_penalty_vars, preference_balance_penalty_vars, min_top3_guarantee_penalty_vars, preference_equity_penalty_vars
 
 
+def validate_and_report_workload_distribution(schedule: List[Dict], employees: List[Dict]) -> None:
+    """Validate and report on workload distribution fairness"""
+    
+    # Count days per employee
+    days_per_employee = {emp["name"]: 0 for emp in employees}
+    
+    for assignment in schedule:
+        employee_name = assignment["employee"]
+        if employee_name in days_per_employee:
+            days_per_employee[employee_name] += 1
+    
+    total_days = len(schedule)
+    num_employees = len(employees)
+    expected_days_per_employee = total_days / num_employees
+    
+    print(f"\n=== WORKLOAD DISTRIBUTION REPORT ===")
+    print(f"Total days: {total_days}")
+    print(f"Number of employees: {num_employees}")
+    print(f"Expected days per employee: {expected_days_per_employee:.1f}")
+    print(f"Days assigned per employee:")
+    
+    for emp_name, days_assigned in days_per_employee.items():
+        difference = days_assigned - expected_days_per_employee
+        print(f"  {emp_name}: {days_assigned} days (difference: {difference:+.1f})")
+    
+    # Check if distribution is fair
+    min_days = min(days_per_employee.values())
+    max_days = max(days_per_employee.values())
+    
+    if max_days - min_days <= 1:
+        print("✅ WORKLOAD DISTRIBUTION: FAIR (difference ≤ 1 day)")
+    else:
+        print(f"❌ WORKLOAD DISTRIBUTION: UNFAIR (range: {min_days}-{max_days} days)")
+        
+    return max_days - min_days <= 1
+
+
 def solve(payload: Dict) -> List[Dict]:
     """PHASE 3: Optimized single-pass solve function with adaptive constraints"""
     
@@ -363,8 +431,9 @@ def solve(payload: Dict) -> List[Dict]:
                     "weekday": date_info["weekday"]
                 })
             
-            # Optional: Print performance info for debugging
-            # print(f"PHASE 3 SOLVER: Found solution in {solve_time:.2f}s with status {solver.StatusName(status)}")
+            # VALIDATE WORKLOAD DISTRIBUTION
+            validate_and_report_workload_distribution(schedule, employees)
+            
             return schedule
         
         else:
